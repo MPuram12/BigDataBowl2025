@@ -52,21 +52,36 @@ def compute_output_features(input_df, output_df, supplementary_df):
         data['ball_land_y'] = data['ball_land_y'].fillna(0)
 
     # --- 3. Merge pass_result from supplementary data ---
-    if 'pass_result' in supplementary_df.columns:
-        # Use drop_duplicates(subset=...) to ensure one row per play
-        play_pass_results = supplementary_df[
-            ['game_id', 'play_id', 'pass_result']
-        ].drop_duplicates(subset=['game_id', 'play_id'])
+    cols_to_merge = ['pass_result', 'route_of_targeted_receiver']
+    
+    # Find which of these columns actually exist in the supplementary_df
+    existing_cols_to_merge = [col for col in cols_to_merge if col in supplementary_df.columns]
+    
+    if existing_cols_to_merge:
+        # Create a list of keys + columns to extract
+        lookup_cols = ['game_id', 'play_id'] + existing_cols_to_merge
         
+        # Extract and de-duplicate based on the play
+        play_supplementary_data = supplementary_df[lookup_cols].drop_duplicates(
+            subset=['game_id', 'play_id']
+        )
+        
+        # Merge this data in
         data = pd.merge(
             data,
-            play_pass_results,
+            play_supplementary_data,
             on=['game_id', 'play_id'],
             how='left'
         )
     else:
-        print("Warning: 'pass_result' column not found in supplementary data.")
-        data['pass_result'] = np.nan # Add empty column if not found
+        print("Warning: No supplementary columns ('pass_result', 'route_of_targeted_receiver') found.")
+
+    # Ensure all requested columns exist, even if they weren't in the file
+    # This prevents errors if they are expected later.
+    for col in cols_to_merge:
+        if col not in data.columns:
+            print(f"Warning: '{col}' not found in supplementary data. Adding as empty column.")
+            data[col] = np.nan
 
     # --- 4. Get and merge static player data ---
     # Get unique player info (position, role, side) from the input data
