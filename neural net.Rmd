@@ -1,0 +1,232 @@
+---
+title: "Untitled"
+author: "Will Kinnebrew"
+date: "2025-10-27"
+output: html_document
+---
+```{r}
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(viridis)
+library(tidyverse)
+library(h2o)
+
+```
+
+```{r}
+df <- read.csv("full_clean_data.csv")
+df <- df %>% 
+  group_by(game_id, play_id) %>% 
+  mutate(final_frame = ifelse(max(frame_id) == frame_id, 1, 0))
+```
+
+
+
+```{r}
+df_filtered <- df %>%
+  drop_na(dist_to_ball_land, speed, accel, direction, accel_direction, optimal_angle, angle_diff)
+
+df_filtered <- df_filtered %>%
+  group_by(game_id, play_id, nfl_id) %>%
+  mutate(reached_ball = ifelse(dist_to_ball_land < 1.5, 1, 0)) %>% 
+  mutate(reached_ball = ifelse(any(final_frame == 1 & reached_ball == 1), 1, 0)) %>%
+  ungroup()
+```
+
+```{r}
+h2o.init()
+
+
+df_model <- df_filtered %>%
+  mutate(
+    nfl_id = as.factor(nfl_id),
+    reached_ball = as.factor(reached_ball)
+  ) %>%
+  select(dist_to_ball_land, speed, accel, angle_diff, time_left_s, nfl_id, reached_ball)
+
+
+set.seed(123)
+train_idx <- sample(1:nrow(df_model), 0.8 * nrow(df_model))
+train <- df_model[train_idx, ]
+test  <- df_model[-train_idx, ]
+
+
+train_h2o <- as.h2o(train)
+test_h2o  <- as.h2o(test)
+
+
+features <- c("dist_to_ball_land", "speed", "accel", "angle_diff", "time_left_s", "nfl_id")
+target   <- "reached_ball"
+
+model <- h2o.deeplearning(
+  x = features,
+  y = target,
+  training_frame = train_h2o,
+  hidden = c(64, 32),
+  epochs = 30,
+  activation = "Rectifier",
+  categorical_encoding = "OneHotInternal",
+  stopping_metric = "AUC",
+  seed = 123
+)
+
+perf <- h2o.performance(model, newdata = test_h2o)
+h2o.auc(perf)
+h2o.confusionMatrix(perf)
+
+
+pred <- h2o.predict(model, test_h2o)
+pred_probs <- as.vector(pred$p1)
+pred_class <- as.vector(pred$predict)
+
+
+plot_df <- as.data.frame(test_h2o) %>%
+  mutate(pred_prob = pred_probs)
+
+ggplot(plot_df, aes(x = dist_to_ball_land, y = speed, color = pred_prob)) +
+  geom_point(alpha = 0.7) +
+  scale_color_viridis_c() +
+  labs(
+    title = "Predicted Probability of Reaching the Ball (h2o)",
+    x = "Distance to Ball",
+    y = "Speed",
+    color = "Predicted Probability"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+model_no_id <- h2o.deeplearning(
+  x = c("dist_to_ball_land", "speed", "accel", "angle_diff", "time_left_s"),
+  y = target,
+  training_frame = train_h2o,
+  hidden = c(64, 32),
+  epochs = 30,
+  activation = "Rectifier",
+  stopping_metric = "AUC",
+  seed = 123
+)
+
+```
+
+```{r}
+perf2 <- h2o.performance(model_no_id, newdata = test_h2o)
+h2o.auc(perf2)
+h2o.confusionMatrix(perf2)
+
+
+pred2 <- h2o.predict(model_no_id, test_h2o)
+pred_probs2 <- as.vector(pred2$p1)
+pred_class2 <- as.vector(pred2$predict)
+
+plot_df <- plot_df %>% 
+  mutate(prob2 = pred_probs2) %>% 
+  mutate(effect = pred_prob - prob2)
+  
+```
+
+```{r}
+library(nflreadr)
+players <- load_players()
+```
+
+```{r}
+plot_df <- plot_df %>% 
+  left_join(players %>% 
+              select(nfl_id, display_name, pff_position), by = c("nfl_id"))
+```
+
+```{r}
+plot_df %>% 
+  group_by(nfl_id) %>%
+  summarise(name = unique(display_name), 
+            n = n(), 
+            avg = round(mean(effect), 5), 
+            total = round(sum(effect), 5), 
+            pos = unique(pff_position)) %>% 
+  filter(n > 50) %>% 
+  arrange(desc(total))
+```
+```{r}
+varimp <- h2o.varimp(model)
+varimp
+```
+
+
+
+```{r}
+perf3 <- h2o.performance(model, newdata = as.h2o(df_filtered))
+h2o.auc(perf3)
+h2o.confusionMatrix(perf3)
+
+
+pred3 <- h2o.predict(model, as.h2o(df_filtered))
+pred_probs3 <- as.vector(pred3$p1)
+pred_class3 <- as.vector(pred3$predict)
+```
+
+```{r}
+perf4 <- h2o.performance(model_no_id, newdata = as.h2o(df_filtered))
+h2o.auc(perf4)
+h2o.confusionMatrix(perf4)
+
+
+pred4 <- h2o.predict(model_no_id, as.h2o(df_filtered))
+pred_probs4 <- as.vector(pred4$p1)
+pred_class4 <- as.vector(pred4$predict)
+```
+
+
+```{r}
+data <- df_filtered %>% 
+  mutate(pred1 = pred_probs3, pred2 = pred_probs4, effect = pred1 - pred2) %>% 
+  left_join(players %>% mutate(nfl_id = as.numeric(nfl_id)) %>% select(nfl_id, display_name, pff_position), by = c("nfl_id"))
+```
+
+
+```{r}
+data %>% 
+  group_by(nfl_id) %>%
+  summarise(name = unique(display_name), 
+            n = n(), 
+            avg = round(mean(effect), 5), 
+            total = round(sum(effect), 5), 
+            pos = unique(pff_position)) %>% 
+  #filter(n > 50, pos != "WR", pos != "TE", pos != "HB") %>% 
+  filter(n > 50, pos == "S") %>% 
+  arrange(desc(total))
+```
+
+```{r}
+plays <- data %>%
+  group_by(game_id, play_id, nfl_id, display_name, pff_position) %>%
+  summarise(
+    start_prob1 = pred1[frame_id == min(frame_id)],   # probability at first frame
+    end_prob1   = pred1[frame_id == max(frame_id)],   # probability at last frame
+    start_prob2 = pred2[frame_id == min(frame_id)],   # probability at first frame
+    end_prob2   = pred2[frame_id == max(frame_id)],   # probability at last frame
+    n_frames   = n(),
+    .groups = "drop"
+  ) %>% 
+  mutate(change1 = end_prob1 - start_prob1, change2 = end_prob2 - start_prob2)
+```
+
+```{r}
+plays %>% 
+  group_by(nfl_id) %>% 
+  summarise(n = n(),
+            avg1 = mean(change1), 
+            avg2 = mean(change2), 
+            total1 = sum(change1),
+            total2 = sum(change2),
+            effect_avg = avg1 - avg2,
+            effect_tot = total1 - total2
+            ) %>% 
+  left_join(players %>% mutate(nfl_id = as.numeric(nfl_id)) %>% select(nfl_id, display_name, pff_position), by = c("nfl_id")) %>% 
+  select(nfl_id, display_name, everything()) %>% 
+  filter(n > 50) %>% 
+  arrange(desc(effect_avg))
+```
+
