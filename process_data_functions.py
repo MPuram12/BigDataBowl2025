@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+import os
+
 def compute_output_features(input_df, output_df, supplementary_df):
     """
     Processes the output dataframe to add new features based on input data.
@@ -299,3 +301,54 @@ def generate_clean_data(week_num):
     # Call the processing function to get the final data
     return compute_output_features(raw_data_input, raw_data_output, supplementary_data)
 
+def combine_all_weeks(input_dir='clean_data', output_filename='full_clean_data.csv'):
+    """
+    Iterates through 'week1.csv' to 'week18.csv' in the input_dir,
+    loads each file, and concatenates them into a single, large
+    dataframe, saving it as a new CSV file.
+
+    Args:
+      input_dir (str): The directory where the 'week{i}.csv' files are stored.
+      output_filename (str): The name for the combined CSV file.
+    """
+    print(f"Starting to combine all data from directory: {input_dir}")
+    all_weeks_list = []
+
+    # Iterate from week 1 to 18
+    for week in range(1, 19):
+        file_path = os.path.join(input_dir, f'week{week}.csv')
+        
+        try:
+            # Load the clean data file for the week
+            print(f"Loading {file_path}...")
+            week_df = pd.read_csv(file_path)
+            
+            # Add the loaded data to our list
+            all_weeks_list.append(week_df)
+            print(f"Loaded {len(week_df)} rows from week {week}.")
+            
+        except FileNotFoundError:
+            print(f"Warning: {file_path} not found. Skipping week {week}.")
+        except pd.errors.EmptyDataError:
+            print(f"Warning: {file_path} is empty. Skipping week {week}.")
+        except Exception as e:
+            print(f"An error occurred with {file_path}: {e}. Skipping.")
+
+    # Check if we actually loaded any data
+    if not all_weeks_list:
+        print(f"Error: No data loaded. Is the '{input_dir}' directory empty or in the wrong location?")
+        return
+
+    # Concatenate all the individual dataframes into one big one
+    print("\nConcatenating all weeks into one dataframe...")
+    full_df = pd.concat(all_weeks_list, ignore_index=True)
+    
+    print(f"Successfully combined data from {len(all_weeks_list)} weeks.")
+    print(f"Total rows in combined file: {len(full_df)}")
+    
+    # Save the final, combined dataset to a new CSV file
+    try:
+        full_df.to_csv(output_filename, index=False)
+        print(f"\nSuccessfully saved combined dataset to '{output_filename}'")
+    except Exception as e:
+        print(f"Error saving file '{output_filename}': {e}")
