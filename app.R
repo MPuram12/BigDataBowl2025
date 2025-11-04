@@ -8,7 +8,7 @@ library(plotly)
 # -----------------------------
 plays <- read_csv("data/supplementary_data.csv") %>% 
   filter(season == 2023)
-tracking_df <- read_csv("data/tracking_df.csv")
+#tracking_df <- read_csv("data/tracking_df.csv")
 
 #plays <- read_csv("play_animation/data/supplementary_data.csv")
 #tracking_df <- read_csv("play_animation/data/tracking_df.csv")
@@ -20,7 +20,7 @@ team_colors_mapping <- c(
   "DEN" = "#FB4F14", "DET" = "#0076B6", "GB" = "#203731",
   "HOU" = "#03202F", "IND" = "#002C5F", "JAX" = "#006778",
   "KC" = "#E31837", "LV" = "#000000", "LAC" = "#2072BA",
-  "LA" = "#866D4B", "MIA" = "#008E97", "MIN" = "#4F2683",
+  "LA" = "#003594", "MIA" = "#008E97", "MIN" = "#4F2683",
   "NE" = "#0C2340", "NO" = "#D3BC8D", "NYG" = "#0B2265",
   "NYJ" = "#125740", "PHI" = "#004C54", "PIT" = "#FFB612",
   "SEA" = "#002244", "SF" = "#AA0000", "TB" = "#D50A0A",
@@ -396,7 +396,9 @@ animate_play_field_with_ball <- function(play_df) {
           color = unique(player_df$player_color),
           line = list(color = unique(player_df$player_outline), width = 2)  # secondary color as outline
         ),
-        text = ~speed_text,
+        text = ~paste0("Pred: ", pred1, 
+                       "\nAverage: ", pred2,
+                       "\nReached: ", reached_ball),
         textposition = 'bottom center',  # puts number on top of the marker
         textfont = list(color = 'black', size = 7),  # <-- set color and size here
         showlegend=FALSE,
@@ -425,12 +427,15 @@ animate_play_field_with_ball <- function(play_df) {
     animation_slider(currentvalue=list(prefix="Frame: ")) %>%
     animation_button(label = "Play")
   
-
-  return(fig)
+   return(fig)
 }
+
+game_id <- 2023100807
+play_id <- 2356
 
 example_play <- get_play_df(tracking_df, plays,
                             game_id, play_id, only_predict = T)
+
 
 #print(colnames(example_play))
 
@@ -438,7 +443,7 @@ animate_play_field_with_ball(example_play)
 
 
 
-
+# 30, 11
 
 
 

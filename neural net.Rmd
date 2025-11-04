@@ -147,7 +147,7 @@ plot_df %>%
             total = round(sum(effect), 5), 
             pos = unique(pff_position)) %>% 
   filter(n > 50) %>% 
-  arrange(desc(total))
+  arrange(desc(avg))
 ```
 ```{r}
 varimp <- h2o.varimp(model)
@@ -187,7 +187,7 @@ data <- df_filtered %>%
 
 
 ```{r}
-data %>% 
+a <- data %>% 
   group_by(nfl_id) %>%
   summarise(name = unique(display_name), 
             n = n(), 
@@ -195,8 +195,8 @@ data %>%
             total = round(sum(effect), 5), 
             pos = unique(pff_position)) %>% 
   #filter(n > 50, pos != "WR", pos != "TE", pos != "HB") %>% 
-  filter(n > 50, pos == "S") %>% 
-  arrange(desc(total))
+  filter(n > 50, pos == "CB") %>% 
+  arrange(desc(avg))
 ```
 
 ```{r}
@@ -230,3 +230,74 @@ plays %>%
   arrange(desc(effect_avg))
 ```
 
+
+```{r}
+test_df <- expand.grid(
+  nfl_id = 53434, # 54508 for wandale robinson, 44881 for cooper kupp, 53434 jamarr chase
+  dist_to_ball_land = seq(1, 40),
+  time_left_s = 4,
+  angle_diff = seq(0, 180, 10),
+  speed = 20, 
+  accel = 0
+)
+
+test_pred <- h2o.predict(model, as.h2o(test_df))
+test_probs <- as.vector(test_pred$p1)
+
+test_df <- test_df %>% 
+  mutate(pred = test_probs)
+
+# Mirror your 0–180° data to make a full 0–360° field
+test_df_mirrored <- test_df %>%
+  mutate(angle_diff_mirror = angle_diff) %>%
+  bind_rows(
+    test_df %>%
+      mutate(angle_diff_mirror = 360 - angle_diff)
+  ) %>% 
+  mutate(reach = pred > .5)
+
+# Plot: 0° straight up, increasing clockwise
+ggplot(test_df_mirrored, aes(x = angle_diff_mirror, y = dist_to_ball_land, fill = pred)) +
+  geom_tile() +
+  coord_polar(start = 0, direction = 1) +  # ✅ This combination puts 0° at top and increases clockwise
+  scale_fill_viridis_c(option = "plasma", name = "Reach Prob.") +
+  scale_x_continuous(
+    breaks = seq(0, 330, 30),
+    labels = paste0(seq(0, 330, 30), "°")
+  ) +
+  scale_y_continuous(
+    limits = c(0,30),
+    breaks = seq(0, 40, 5),
+    name = "Distance to Ball Landing"
+  ) +
+  labs(
+    title = "Reachable Area Heat Map",
+    subtitle = paste("Time Remaining:", test_df_mirrored$time_left_s, "Seconds"),
+    x = "Angle (°)",
+    y = "Distance"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "gray80", linetype = "dotted"),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(size = 10, face = "bold"),
+    legend.position = "right"
+  ) +
+  # Optional: show the player in the center
+  annotate("point", x = 0, y = 0, size = 4, color = "white")
+
+
+```
+
+```{r}
+extra_data <- data %>% 
+  select(game_id, play_id, frame_id, x, y, 15:28)
+```
+
+
+```{r}
+tracking_df <- tracking_df %>% left_join(extra_data, by = c("game_id", "play_id", "frame_id", "x", "y")) %>% 
+  mutate(pred1 = round(pred1, 3),
+         pred2 = round(pred2, 3))
+```
