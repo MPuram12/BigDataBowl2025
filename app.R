@@ -10,8 +10,8 @@ plays <- read_csv("data/supplementary_data.csv") %>%
   filter(season == 2023)
 #tracking_df <- read_csv("data/tracking_df.csv")
 
-#plays <- read_csv("play_animation/data/supplementary_data.csv")
-#tracking_df <- read_csv("play_animation/data/tracking_df.csv")
+plays <- read_csv("supplementary_data.csv")
+tracking_df <- read_csv("tracking_df.csv")
 
 team_colors_mapping <- c(
   "ARI" = "#97233F", "ATL" = "#A71930", "BAL" = "#241773",
@@ -436,12 +436,13 @@ play_id <- 2356
 example_play <- get_play_df(tracking_df, plays,
                             game_id, play_id, only_predict = T)
 
+write.csv(example_play, "chase.csv")
 
 #print(colnames(example_play))
 
 animate_play_field_with_ball(example_play)
 
-
+View(example_play)
 
 # 30, 11
 
