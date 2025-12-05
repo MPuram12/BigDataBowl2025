@@ -2,7 +2,9 @@
 title: "Untitled"
 author: "Will Kinnebrew"
 date: "2025-10-27"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 ```{r}
 library(dplyr)
@@ -297,7 +299,7 @@ extra_data <- data %>%
 
 
 ```{r}
-tracking_df <- tracking_df %>% left_join(extra_data, by = c("game_id", "play_id", "frame_id", "x", "y")) %>% 
-  mutate(pred1 = round(pred1, 3),
-         pred2 = round(pred2, 3))
+#tracking_df <- tracking_df %>% left_join(extra_data, by = c("game_id", "play_id", "frame_id", "x", "y")) %>% 
+#  mutate(pred1 = round(pred1, 3),
+#         pred2 = round(pred2, 3))
 ```
