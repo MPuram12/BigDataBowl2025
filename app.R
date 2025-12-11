@@ -15,6 +15,7 @@ h2o.no_progress()
 if(dir.exists("h2o_models")) {
   tryCatch({
     model_no_id <- h2o.loadModel(file.path("h2o_models", "model_no_id"))
+    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id"))
   }, error = function(e) {
     warning("Could not load H2O models. Check your 'h2o_models' path.")
   })
@@ -69,7 +70,7 @@ generate_catch_grid <- function(player_x, player_y, player_dir, time_left, nfl_i
   # Define grid (Polar) - Increased resolution (by=10) for smoother look
   grid <- expand.grid(
     angle_relative = seq(-90, 90, by = 10), 
-    dist = seq(2, 20, by = 2)
+    dist = seq(2, 30, by = 2)
   )
   
   grid <- grid %>%
@@ -202,7 +203,7 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
     ) %>%
     select(global_frame_id, x, y, direction, nfl_id, frame_id) 
   
-  if(nrow(receiver_info) > 0 && exists("model_no_id")) {
+  if(nrow(receiver_info) > 0 && exists("model_with_id")) {
     grid_frames <- list()
     max_frame <- max(receiver_info$frame_id, na.rm = TRUE)
     
@@ -216,7 +217,7 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
         player_dir = row$direction, 
         time_left = max(t_left, 0),
         nfl_id = row$nfl_id,
-        model = model_no_id
+        model = model_with_id
       )
       frame_grid$global_frame_id <- row$global_frame_id
       grid_frames[[i]] <- frame_grid
@@ -263,7 +264,12 @@ prepare_ball <- function(play_df) {
   } else {
     ball_output <- data.frame(global_frame_id=integer(0), x=numeric(0), y=numeric(0))
   }
-  return(bind_rows(qb_input, ball_output))
+  ball <- bind_rows(qb_input, ball_output) %>%
+  arrange(global_frame_id) %>%
+  tidyr::fill(x, y, .direction = "down")
+
+  return(ball)
+
 }
 
 animate_play_field_with_ball <- function(play_df) {
@@ -327,26 +333,22 @@ animate_play_field_with_ball <- function(play_df) {
   # Vectors - FILTERED AND MASKED TO PREVENT GHOSTING
   arrow_scale <- 10
   vectors_df <- play_df %>%
-    mutate(
-      # Determine if vector should be shown (significant speed)
-      show_vector = speed > 0.1,
-      
-      # Calculate Coords or set to NA if hidden
-      # Setting to NA is critical: it tells Plotly "draw nothing here", clearing the old line
-      x_start = ifelse(show_vector, x, NA),
-      y_start = ifelse(show_vector, y, NA),
-      x_end = ifelse(show_vector, x + replace_na(dx,0) * arrow_scale, NA),
-      y_end = ifelse(show_vector, y + replace_na(dy,0) * arrow_scale, NA)
+  mutate(
+    x_start = x,
+    y_start = y,
+    x_end = ifelse(speed > 0.1, x + dx * arrow_scale, x),
+    y_end = ifelse(speed > 0.1, y + dy * arrow_scale, y)
     ) %>%
     rowwise() %>% 
     mutate(
-      xs = list(c(x_start, x_end, NA)), 
+      xs = list(c(x_start, x_end, NA)),
       ys = list(c(y_start, y_end, NA))
-    ) %>% 
+    ) %>%
     ungroup() %>%
-    select(global_frame_id, nfl_id, xs, ys) %>% 
-    tidyr::unnest(cols = c(xs, ys)) %>% 
+    select(global_frame_id, nfl_id, xs, ys) %>%
+    tidyr::unnest(cols = c(xs, ys)) %>%
     rename(x = xs, y = ys)
+
   
   fig <- fig %>% add_trace(
     data = vectors_df, x = ~x, y = ~y, frame = ~global_frame_id,
