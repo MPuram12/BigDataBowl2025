@@ -65,7 +65,7 @@ team_secondary_colors <- c(
 # ==============================================================================
 
 # Function to generate a probability grid around a specific player
-generate_catch_grid <- function(player_x, player_y, player_dir, time_left, nfl_id, model) {
+generate_catch_grid <- function(player_x, player_y, player_dir, speed, accel, time_left, nfl_id, model) {
   
   # Define grid (Polar) - Increased resolution (by=10) for smoother look
   grid <- expand.grid(
@@ -83,8 +83,8 @@ generate_catch_grid <- function(player_x, player_y, player_dir, time_left, nfl_i
       # Features for H2O
       dist_to_ball_land = dist, 
       angle_diff = abs(angle_relative),
-      speed = 0, 
-      accel = 0,
+      speed = speed, 
+      accel = accel,
       time_left_s = time_left,
       nfl_id = nfl_id
     )
@@ -215,6 +215,8 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
         player_x = row$x, 
         player_y = row$y, 
         player_dir = row$direction, 
+        speed = row$speed,
+        accel = row$accel,
         time_left = max(t_left, 0),
         nfl_id = row$nfl_id,
         model = model_with_id
@@ -226,6 +228,8 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
     heatmap_df <- bind_rows(grid_frames)
     attr(play_df, "heatmap_data") <- heatmap_df
   }
+
+  
   
   return(play_df)
 }
@@ -256,7 +260,11 @@ prepare_ball <- function(play_df) {
         arrange(global_frame_id) %>%
         mutate(x = zoo::na.approx(x, na.rm = FALSE, rule = 2), y = zoo::na.approx(y, na.rm = FALSE, rule = 2))
       
-      land_frame <- min(ball_output$global_frame_id[ball_output$x == ball_end$ball_land_x & ball_output$y == ball_end$ball_land_y])
+      nearest_idx <- which.min((ball_output$x - ball_end$ball_land_x)^2 +
+                         (ball_output$y - ball_end$ball_land_y)^2)
+
+      land_frame <- ball_output$global_frame_id[nearest_idx]
+
       ball_output <- ball_output %>% left_join(receiver_path, by="global_frame_id", suffix=c("", "_recv")) %>%
         mutate(x = ifelse(global_frame_id >= land_frame, x_recv, x), y = ifelse(global_frame_id >= land_frame, y_recv, y)) %>%
         select(global_frame_id, x, y)
@@ -264,29 +272,40 @@ prepare_ball <- function(play_df) {
   } else {
     ball_output <- data.frame(global_frame_id=integer(0), x=numeric(0), y=numeric(0))
   }
-  ball <- bind_rows(qb_input, ball_output) %>%
-  arrange(global_frame_id) %>%
-  tidyr::fill(x, y, .direction = "down")
+  
+  # -------------------------------------------------------
+  # Guarantee a ball position for EVERY frame in animation
+  # -------------------------------------------------------
 
-  return(ball)
+  # Determine full animation range
+  all_frames <- seq(min(play_df$global_frame_id), max(play_df$global_frame_id))
 
+  ball_full <- data.frame(global_frame_id = all_frames) %>%
+    left_join(ball_df <- bind_rows(qb_input, ball_output),
+              by = "global_frame_id") %>%
+    arrange(global_frame_id) %>%
+    tidyr::fill(x, y, .direction = "downup")   # Fill both directions
+
+  return(ball_full)
 }
 
 animate_play_field_with_ball <- function(play_df) {
-  
-  ball_df <- prepare_ball(play_df)
+
   heatmap_df <- attr(play_df, "heatmap_data")
-  
+
   field_length <- 120
   field_width <- 53.3
   los <- play_df$absolute_yardline_number[1]
   yards_to_go <- play_df$yards_to_go[1]
   play_direction <- play_df$play_direction[1]
+
+  # First down marker
   first_down_marker <- if(play_direction == "right") los + yards_to_go else los - yards_to_go
-  
+
+  # Teams
   offense_team <- unique(play_df$possession_team)
   defense_team <- unique(play_df$defensive_team)
-  
+
   if(play_direction == "right") {
     left_endzone_color <- team_colors_mapping[offense_team]
     right_endzone_color <- team_colors_mapping[defense_team]
@@ -294,91 +313,138 @@ animate_play_field_with_ball <- function(play_df) {
     left_endzone_color <- team_colors_mapping[defense_team]
     right_endzone_color <- team_colors_mapping[offense_team]
   }
-  
+
+  # Field lines
   ten_yard_lines <- seq(20, 100, 10)
   five_yard_lines <- seq(15, 105, 5)
-  
+
   shapes_list <- c(
-    lapply(ten_yard_lines, function(x) list(type = "line", x0 = x, x1 = x, y0 = 0, y1 = field_width, line = list(color = "white", width = 2), layer = "below")),
-    lapply(setdiff(five_yard_lines, ten_yard_lines), function(x) list(type = "line", x0 = x, x1 = x, y0 = 0, y1 = field_width, line = list(color = "white", width = 1, dash = "dot"), layer = "below")),
+    lapply(ten_yard_lines, function(x) list(type="line", x0=x, x1=x, y0=0, y1=field_width, line=list(color="white", width=2), layer="below")),
+    lapply(setdiff(five_yard_lines, ten_yard_lines), function(x) list(type="line", x0=x, x1=x, y0=0, y1=field_width, line=list(color="white", width=1, dash="dot"), layer="below")),
     list(
-      list(type="line", x0=los, x1=los, y0=0, y1=field_width, line=list(color="blue", dash = "dash", width=2), layer = "below"),
-      list(type="line", x0=first_down_marker, x1=first_down_marker, y0=0, y1=field_width, line=list(color="yellow", dash = "dash", width=2), layer = "below")
+      list(type="line", x0=los, x1=los, y0=0, y1=field_width, line=list(color="blue", dash="dash", width=2), layer="below"),
+      list(type="line", x0=first_down_marker, x1=first_down_marker, y0=0, y1=field_width, line=list(color="yellow", dash="dash", width=2), layer="below")
     ),
     list(
-      list(type="rect", x0=0, x1=10, y0=0, y1=field_width, fillcolor=left_endzone_color, line=list(width=0), layer = "below"),
-      list(type="rect", x0=110, x1=120, y0=0, y1=field_width, fillcolor=right_endzone_color, line=list(width=0), layer = "below")
+      list(type="rect", x0=0, x1=10, y0=0, y1=field_width, fillcolor=left_endzone_color, line=list(width=0), layer="below"),
+      list(type="rect", x0=110, x1=120, y0=0, y1=field_width, fillcolor=right_endzone_color, line=list(width=0), layer="below")
     )
   )
-  
+
   fig <- plot_ly() %>%
     layout(
-      title = list(text = paste0("Game ", play_df$game_id[1], " | Play ", play_df$play_id[1]), y = .965, x = 0.5, xanchor = "center", yanchor = "bottom"),
+      title=list(text=paste0("Game ", play_df$game_id[1], " | Play ", play_df$play_id[1]), y=.965, x=0.5, xanchor="center", yanchor="bottom"),
       xaxis=list(range=c(0, field_length), showticklabels=FALSE, zeroline=FALSE),
       yaxis=list(range=c(0, field_width), showticklabels=FALSE, zeroline=FALSE),
       plot_bgcolor="#00B140",
       shapes=shapes_list
     )
-  
-  # Add Heatmap
-  if (!is.null(heatmap_df)) {
-    fig <- fig %>% add_trace(
-      data = heatmap_df, x = ~field_x, y = ~field_y, frame = ~global_frame_id,
-      type = 'scatter', mode = 'markers',
-      marker = list(size = 8, symbol = "square", opacity = 0.4, color = ~prob, colorscale = "Viridis", showscale = FALSE),
-      hoverinfo = "text", text = ~paste0("Prob: ", round(prob, 2)), showlegend = FALSE
-    )
-  }
-  
-  # Vectors - FILTERED AND MASKED TO PREVENT GHOSTING
+
+  # Vectors
   arrow_scale <- 10
   vectors_df <- play_df %>%
-  mutate(
-    x_start = x,
-    y_start = y,
-    x_end = ifelse(speed > 0.1, x + dx * arrow_scale, x),
-    y_end = ifelse(speed > 0.1, y + dy * arrow_scale, y)
-    ) %>%
-    rowwise() %>% 
     mutate(
-      xs = list(c(x_start, x_end, NA)),
-      ys = list(c(y_start, y_end, NA))
+      x_start = x,
+      y_start = y,
+      x_end = ifelse(speed > 0.1, x + dx * arrow_scale, x),
+      y_end = ifelse(speed > 0.1, y + dy * arrow_scale, y)
     ) %>%
+    rowwise() %>%
+    mutate(xs=list(c(x_start, x_end, NA)), ys=list(c(y_start, y_end, NA))) %>%
     ungroup() %>%
     select(global_frame_id, nfl_id, xs, ys) %>%
-    tidyr::unnest(cols = c(xs, ys)) %>%
-    rename(x = xs, y = ys)
+    tidyr::unnest(cols=c(xs, ys)) %>%
+    rename(x=xs, y=ys)
 
-  
   fig <- fig %>% add_trace(
-    data = vectors_df, x = ~x, y = ~y, frame = ~global_frame_id,
-    type = 'scatter', mode = 'lines', line = list(color = 'black', width = 2),
-    showlegend = FALSE, hoverinfo = 'none', split = ~nfl_id
+    data=vectors_df, x=~x, y=~y, frame=~global_frame_id,
+    type='scatter', mode='lines', line=list(color='black', width=2),
+    showlegend=FALSE, hoverinfo='none', split=~nfl_id
   )
-  
+
   # Players
   for(player in unique(play_df$nfl_id)) {
-    player_df <- play_df %>% filter(nfl_id == player)
-    hover_text <- if("reached_ball" %in% names(player_df)) { ~paste0("Pred: ", pred1, "\nReached: ", reached_ball) } else { ~paste0(player_name) }
-    
+    player_df <- play_df %>% filter(nfl_id==player)
     fig <- fig %>% add_trace(
-      data = player_df, x = ~x, y = ~y, frame = ~global_frame_id,
-      type = 'scatter', mode = 'markers+text',
-      marker = list(size = 15, color = unique(player_df$player_color), line = list(color = unique(player_df$player_outline), width = 2)),
-      text = hover_text, textposition = 'bottom center', textfont = list(color = 'black', size = 7),
+      data=player_df, x=~x, y=~y, frame=~global_frame_id,
+      type='scatter', mode='markers+text',
+      marker=list(size=15, color=unique(player_df$player_color), line=list(color=unique(player_df$player_outline), width=2)),
+      text=~player_name, textposition='bottom center', textfont=list(color='black', size=7),
       showlegend=FALSE, hoverinfo='none'
     )
   }
-  
-  # Ball (Added to end to ensure it renders on top)
-  fig <- fig %>% add_trace(
-    data = ball_df, x = ~x, y = ~y, frame = ~global_frame_id,
-    type = 'scatter', mode = 'markers', marker = list(size=9, color="#815337", symbol="circle"),
-    hoverinfo='none', showlegend=FALSE
-  ) %>% animation_opts(frame=100, redraw=FALSE) %>% animation_slider(currentvalue=list(prefix="Frame: ")) %>% animation_button(label = "Play")
-  
+
+  # Landing spot (constant trace, no frame)
+  landing <- play_df %>% filter(player_role == "Passer") %>% select(ball_land_x, ball_land_y) %>% slice(1)
+frames <- sort(unique(play_df$global_frame_id))
+landing_df <- data.frame(
+  global_frame_id = frames,
+  x = landing$ball_land_x,
+  y = landing$ball_land_y,
+  seconds_remaining = round(max(frames) - frames, 0) / 10  # time until landing in seconds
+)
+
+fig <- fig %>% add_trace(
+  data = landing_df,
+  x = ~x, y = ~y, frame = ~global_frame_id,
+  type = 'scatter', mode = 'markers+text',
+  marker = list(size = 12, color = "red", symbol="x"),
+  text = ~paste0(seconds_remaining, "s"), textposition = "top center",
+  showlegend = FALSE, hoverinfo = 'none'
+)
+
+all_frames <- sort(unique(play_df$global_frame_id))
+first_heatmap_frame <- min(heatmap_df$global_frame_id)
+
+# For frames before heatmap, make invisible placeholder points
+pre_heatmap <- data.frame(
+  global_frame_id = all_frames[all_frames < first_heatmap_frame],
+  field_x = -1000,  # off-screen
+  field_y = -1000,
+  prob = 0
+)
+
+heatmap_full <- bind_rows(pre_heatmap, heatmap_df)
+
+fig <- fig %>% add_trace(
+  data = heatmap_full,
+  x = ~field_x, y = ~field_y, frame = ~global_frame_id,
+  type = 'scatter', mode = 'markers',
+  marker = list(size = 8, symbol = "square", opacity = 0.4, color = ~prob, colorscale = "Viridis", showscale = FALSE),
+  hoverinfo = "text", text = ~paste0("Prob: ", round(prob, 2)), showlegend = FALSE
+)
+
+# Prepare the ball
+ball_df <- prepare_ball(play_df)  # ensures every frame has x/y
+
+fig <- fig %>% add_trace(
+  data = ball_df,
+  x = ~x, y = ~y, frame = ~global_frame_id,
+  type = 'scatter', mode = 'markers+lines',
+  line = list(width = 2, color = "#815337"),
+  marker = list(size = 9, color="#815337", symbol="circle"),
+  hoverinfo='none',
+  showlegend=FALSE
+)
+
+
+
+  fig <- fig %>%
+    animation_opts(frame=100, redraw=FALSE) %>%
+    animation_slider(currentvalue=list(prefix="Frame: ")) %>%
+    animation_button(label="Play")
+
   return(fig)
 }
+
+
+chase <- get_play_df(tracking_df, plays, game_id = 2023100807, play_id = 2356, only_predict = TRUE)
+ball <- prepare_ball(chase)
+animate_play_field_with_ball(chase)
+
+heatmap_df <- attr(chase, "heatmap_data")
+view(heatmap_df)
+
 
 # ==============================================================================
 # 3. UI & SERVER
@@ -434,3 +500,6 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
+
+
+
