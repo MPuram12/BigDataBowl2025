@@ -15,7 +15,7 @@ h2o.no_progress()
 if(dir.exists("h2o_models")) {
   tryCatch({
     model_no_id <- h2o.loadModel(file.path("h2o_models", "model_no_id"))
-    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id"))
+    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id_gbm"))
   }, error = function(e) {
     warning("Could not load H2O models. Check your 'h2o_models' path.")
   })
@@ -64,38 +64,48 @@ team_secondary_colors <- c(
 # 2. HELPER FUNCTIONS
 # ==============================================================================
 
-# Function to generate a probability grid around a specific player
-generate_catch_grid <- function(player_x, player_y, player_dir, speed, accel, time_left, nfl_id, model) {
+generate_catch_grid <- function(player_color, player_x, player_y, player_dir, player_speed, player_accel, time_left, nfl_id, model) {
   
-  # Define grid (Polar) - Increased resolution (by=10) for smoother look
-  grid <- expand.grid(
-    angle_relative = seq(-90, 90, by = 10), 
-    dist = seq(2, 30, by = 2)
+  # Define polar grid
+  angle_seq <- seq(0, 45, by = 5)       # smaller cone for realistic catch area
+  dist_seq <- seq(1, 30, by = 1)
+  grid <- expand.grid(angle_diff = angle_seq, dist_to_ball_land = dist_seq)
+  
+  # Keep features for the model
+  grid <- grid %>% mutate(
+    speed = !!player_speed,
+    accel = !!player_accel,
+    time_left_s = !!time_left,
+    nfl_id = !!nfl_id,
+    player_color = !!player_color
   )
   
-  grid <- grid %>%
-    mutate(
-      # ROTATION FIX: 270 offset correctly rotates the cone 180 degrees relative to player
-      angle_rad = (270 - (player_dir + angle_relative)) * pi / 180,
-      field_x = player_x + dist * cos(angle_rad),
-      field_y = player_y + dist * sin(angle_rad),
-      
-      # Features for H2O
-      dist_to_ball_land = dist, 
-      angle_diff = abs(angle_relative),
-      speed = speed, 
-      accel = accel,
-      time_left_s = time_left,
-      nfl_id = nfl_id
-    )
-  
-  # Predict
-  h2o_grid <- as.h2o(grid)
-  preds <- h2o.predict(model, h2o_grid)
+  # Predict probabilities
+  preds <- h2o.predict(model, as.h2o(grid))
   grid$prob <- as.vector(preds$p1)
   
-  return(grid)
+  # Mirror for full coverage
+  grid_full <- grid %>%
+    mutate(angle_diff_mirror = angle_diff) %>%
+    bind_rows(grid %>% mutate(angle_diff_mirror = 360 - angle_diff)) %>%
+    filter(prob > 0.5)
+  
+  # Convert polar to field coordinates
+  grid_full <- grid_full %>%
+    mutate(
+      angle_rad = (player_dir + angle_diff_mirror) * pi / 180,
+      field_x = player_x + dist_to_ball_land * cos(angle_rad),
+      field_y = player_y + dist_to_ball_land * sin(angle_rad)
+    )
+  
+  grid_full
 }
+
+
+
+
+
+
 
 # Function to clean and prepare the play dataframe
 get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = FALSE) {
@@ -197,37 +207,30 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
   # --- HEATMAP GENERATION ---
   # Only for Output frames (Ball in air)
   receiver_info <- play_df %>% 
-    filter(
-      player_role == "Targeted Receiver", 
-      file_type == "output"
-    ) %>%
-    select(global_frame_id, x, y, direction, nfl_id, frame_id) 
+  filter(player_role == "Targeted Receiver", file_type == "output") %>%
+  select(global_frame_id, x, y, speed, accel, direction, nfl_id, frame_id, player_color)
+
+if(nrow(receiver_info) > 0 && exists("model_with_id")) {
+  grid_frames <- lapply(1:nrow(receiver_info), function(i) {
+    row <- receiver_info[i, ]
+    t_left <- (max(receiver_info$frame_id, na.rm = TRUE) - row$frame_id) / 10
+    generate_catch_grid(
+      player_x = row$x,
+      player_y = row$y,
+      player_dir = row$direction,
+      player_speed = row$speed,
+      player_accel = row$accel,
+      time_left = max(t_left, 0),
+      nfl_id = row$nfl_id,
+      model = model_with_id,
+      player_color = row$player_color
+    ) %>% mutate(global_frame_id = row$global_frame_id)
+  })
   
-  if(nrow(receiver_info) > 0 && exists("model_with_id")) {
-    grid_frames <- list()
-    max_frame <- max(receiver_info$frame_id, na.rm = TRUE)
-    
-    for(i in 1:nrow(receiver_info)) {
-      row <- receiver_info[i,]
-      t_left <- if("time_left_s" %in% names(row)) row$time_left_s else (max_frame - row$frame_id) / 10
-      
-      frame_grid <- generate_catch_grid(
-        player_x = row$x, 
-        player_y = row$y, 
-        player_dir = row$direction, 
-        speed = row$speed,
-        accel = row$accel,
-        time_left = max(t_left, 0),
-        nfl_id = row$nfl_id,
-        model = model_with_id
-      )
-      frame_grid$global_frame_id <- row$global_frame_id
-      grid_frames[[i]] <- frame_grid
-    }
-    
-    heatmap_df <- bind_rows(grid_frames)
-    attr(play_df, "heatmap_data") <- heatmap_df
-  }
+  heatmap_df <- bind_rows(grid_frames)
+  attr(play_df, "heatmap_data") <- heatmap_df
+}
+
 
   
   
@@ -299,22 +302,15 @@ animate_play_field_with_ball <- function(play_df) {
   yards_to_go <- play_df$yards_to_go[1]
   play_direction <- play_df$play_direction[1]
 
-  # First down marker
   first_down_marker <- if(play_direction == "right") los + yards_to_go else los - yards_to_go
 
-  # Teams
+  # Endzones
   offense_team <- unique(play_df$possession_team)
   defense_team <- unique(play_df$defensive_team)
+  left_endzone_color <- if(play_direction=="right") team_colors_mapping[offense_team] else team_colors_mapping[defense_team]
+  right_endzone_color <- if(play_direction=="right") team_colors_mapping[defense_team] else team_colors_mapping[offense_team]
 
-  if(play_direction == "right") {
-    left_endzone_color <- team_colors_mapping[offense_team]
-    right_endzone_color <- team_colors_mapping[defense_team]
-  } else {
-    left_endzone_color <- team_colors_mapping[defense_team]
-    right_endzone_color <- team_colors_mapping[offense_team]
-  }
-
-  # Field lines
+  # Field shapes
   ten_yard_lines <- seq(20, 100, 10)
   five_yard_lines <- seq(15, 105, 5)
 
@@ -340,7 +336,7 @@ animate_play_field_with_ball <- function(play_df) {
       shapes=shapes_list
     )
 
-  # Vectors
+  # --- Vectors ---
   arrow_scale <- 10
   vectors_df <- play_df %>%
     mutate(
@@ -362,7 +358,7 @@ animate_play_field_with_ball <- function(play_df) {
     showlegend=FALSE, hoverinfo='none', split=~nfl_id
   )
 
-  # Players
+  # --- Players ---
   for(player in unique(play_df$nfl_id)) {
     player_df <- play_df %>% filter(nfl_id==player)
     fig <- fig %>% add_trace(
@@ -374,61 +370,69 @@ animate_play_field_with_ball <- function(play_df) {
     )
   }
 
-  # Landing spot (constant trace, no frame)
+  # --- Heatmap for Targeted Receiver ---
+  if(!is.null(heatmap_df) && nrow(heatmap_df) > 0) {
+    all_frames <- sort(unique(play_df$global_frame_id))
+    first_heatmap_frame <- min(heatmap_df$global_frame_id)
+
+    pre_heatmap <- data.frame(
+      global_frame_id = all_frames[all_frames < first_heatmap_frame],
+      field_x = -1000,
+      field_y = -1000,
+      prob = 0,
+      player_color = heatmap_df$player_color[1]
+    )
+
+    heatmap_full <- bind_rows(pre_heatmap, heatmap_df)
+
+    fig <- fig %>% add_trace(
+      data = heatmap_full,
+      x = ~field_x, y = ~field_y, frame = ~global_frame_id,
+      type = 'scatter', mode = 'markers',
+      marker = list(
+        size = 8,
+        symbol = "circle",
+        opacity = ~prob
+        color = heatmap_full$player_color
+      ),
+      hoverinfo = "text",
+      text = ~paste0("Prob: ", round(prob, 2)),
+      showlegend = FALSE
+    )
+  }
+
+  # --- Ball ---
+  ball_df <- prepare_ball(play_df)
+  fig <- fig %>% add_trace(
+    data = ball_df,
+    x = ~x, y = ~y, frame = ~global_frame_id,
+    type = 'scatter', mode = 'markers+lines',
+    line = list(width = 2, color = "#815337"),
+    marker = list(size = 9, color="#815337", symbol="circle"),
+    hoverinfo='none',
+    showlegend=FALSE
+  )
+
+  # --- Landing spot with frame-based countdown ---
   landing <- play_df %>% filter(player_role == "Passer") %>% select(ball_land_x, ball_land_y) %>% slice(1)
-frames <- sort(unique(play_df$global_frame_id))
-landing_df <- data.frame(
-  global_frame_id = frames,
-  x = landing$ball_land_x,
-  y = landing$ball_land_y,
-  seconds_remaining = round(max(frames) - frames, 0) / 10  # time until landing in seconds
-)
+  frames <- sort(unique(play_df$global_frame_id))
+  landing_df <- data.frame(
+    global_frame_id = frames,
+    x = landing$ball_land_x,
+    y = landing$ball_land_y,
+    seconds_remaining = round(max(frames) - frames, 0) / 10
+  )
 
-fig <- fig %>% add_trace(
-  data = landing_df,
-  x = ~x, y = ~y, frame = ~global_frame_id,
-  type = 'scatter', mode = 'markers+text',
-  marker = list(size = 12, color = "red", symbol="x"),
-  text = ~paste0(seconds_remaining, "s"), textposition = "top center",
-  showlegend = FALSE, hoverinfo = 'none'
-)
+  fig <- fig %>% add_trace(
+    data = landing_df,
+    x = ~x, y = ~y, frame = ~global_frame_id,
+    type = 'scatter', mode = 'markers+text',
+    marker = list(size = 12, color = "red", symbol="x"),
+    text = ~paste0(seconds_remaining, "s"), textposition = "top center",
+    showlegend = FALSE, hoverinfo = 'none'
+  )
 
-all_frames <- sort(unique(play_df$global_frame_id))
-first_heatmap_frame <- min(heatmap_df$global_frame_id)
-
-# For frames before heatmap, make invisible placeholder points
-pre_heatmap <- data.frame(
-  global_frame_id = all_frames[all_frames < first_heatmap_frame],
-  field_x = -1000,  # off-screen
-  field_y = -1000,
-  prob = 0
-)
-
-heatmap_full <- bind_rows(pre_heatmap, heatmap_df)
-
-fig <- fig %>% add_trace(
-  data = heatmap_full,
-  x = ~field_x, y = ~field_y, frame = ~global_frame_id,
-  type = 'scatter', mode = 'markers',
-  marker = list(size = 8, symbol = "square", opacity = 0.4, color = ~prob, colorscale = "Viridis", showscale = FALSE),
-  hoverinfo = "text", text = ~paste0("Prob: ", round(prob, 2)), showlegend = FALSE
-)
-
-# Prepare the ball
-ball_df <- prepare_ball(play_df)  # ensures every frame has x/y
-
-fig <- fig %>% add_trace(
-  data = ball_df,
-  x = ~x, y = ~y, frame = ~global_frame_id,
-  type = 'scatter', mode = 'markers+lines',
-  line = list(width = 2, color = "#815337"),
-  marker = list(size = 9, color="#815337", symbol="circle"),
-  hoverinfo='none',
-  showlegend=FALSE
-)
-
-
-
+  # --- Animation settings ---
   fig <- fig %>%
     animation_opts(frame=100, redraw=FALSE) %>%
     animation_slider(currentvalue=list(prefix="Frame: ")) %>%
@@ -438,6 +442,8 @@ fig <- fig %>% add_trace(
 }
 
 
+
+
 chase <- get_play_df(tracking_df, plays, game_id = 2023100807, play_id = 2356, only_predict = TRUE)
 ball <- prepare_ball(chase)
 animate_play_field_with_ball(chase)
@@ -445,7 +451,7 @@ animate_play_field_with_ball(chase)
 heatmap_df <- attr(chase, "heatmap_data")
 view(heatmap_df)
 
-
+write.csv(chase, "chase.csv")
 # ==============================================================================
 # 3. UI & SERVER
 # ==============================================================================
