@@ -7,15 +7,15 @@ library(h2o)
 # 1. GLOBAL SETUP & DATA LOADING
 # ==============================================================================
 
+h2o.shutdown(prompt = FALSE)  # Ensure no existing H2O instance is running
 # Initialize H2O
-h2o.init()
-h2o.no_progress() 
+h2o.init() 
 
 # Load Models
 if(dir.exists("h2o_models")) {
   tryCatch({
     model_no_id <- h2o.loadModel(file.path("h2o_models", "model_no_id"))
-    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id_gbm"))
+    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id_dl"))
   }, error = function(e) {
     warning("Could not load H2O models. Check your 'h2o_models' path.")
   })
@@ -207,7 +207,10 @@ get_play_df <- function(tracking_df, plays_df, game_id, play_id, only_predict = 
   # --- HEATMAP GENERATION ---
   # Only for Output frames (Ball in air)
   receiver_info <- play_df %>% 
-  filter(player_role == "Targeted Receiver", file_type == "output") %>%
+  filter(
+    #player_role == "Targeted Receiver", 
+    player_role != "Passer",
+    file_type == "output") %>%
   select(global_frame_id, x, y, speed, accel, direction, nfl_id, frame_id, player_color)
 
 if(nrow(receiver_info) > 0 && exists("model_with_id")) {
@@ -365,41 +368,48 @@ animate_play_field_with_ball <- function(play_df) {
       data=player_df, x=~x, y=~y, frame=~global_frame_id,
       type='scatter', mode='markers+text',
       marker=list(size=15, color=unique(player_df$player_color), line=list(color=unique(player_df$player_outline), width=2)),
-      text=~player_name, textposition='bottom center', textfont=list(color='black', size=7),
+      text=~player_name, textposition='bottom center', textfont=list(color='black', size=17), textfont.weight='bold',
       showlegend=FALSE, hoverinfo='none'
     )
   }
 
-  # --- Heatmap for Targeted Receiver ---
-  if(!is.null(heatmap_df) && nrow(heatmap_df) > 0) {
-    all_frames <- sort(unique(play_df$global_frame_id))
-    first_heatmap_frame <- min(heatmap_df$global_frame_id)
+  for(pid in unique(heatmap_df$nfl_id)) {
 
-    pre_heatmap <- data.frame(
-      global_frame_id = all_frames[all_frames < first_heatmap_frame],
-      field_x = -1000,
-      field_y = -1000,
-      prob = 0,
-      player_color = heatmap_df$player_color[1]
-    )
+  player_heat <- heatmap_df %>% filter(nfl_id == pid)
+  player_color <- unique(player_heat$player_color)
 
-    heatmap_full <- bind_rows(pre_heatmap, heatmap_df)
+  # pad frames before heatmap appears
+  pre_heatmap <- data.frame(
+    global_frame_id = setdiff(
+      unique(play_df$global_frame_id),
+      unique(player_heat$global_frame_id)
+    ),
+    field_x = -1000,
+    field_y = -1000,
+    prob = 0
+  )
 
-    fig <- fig %>% add_trace(
-      data = heatmap_full,
-      x = ~field_x, y = ~field_y, frame = ~global_frame_id,
-      type = 'scatter', mode = 'markers',
-      marker = list(
-        size = 8,
-        symbol = "circle",
-        opacity = ~prob
-        color = heatmap_full$player_color
-      ),
-      hoverinfo = "text",
-      text = ~paste0("Prob: ", round(prob, 2)),
-      showlegend = FALSE
-    )
-  }
+  heatmap_full <- bind_rows(pre_heatmap, player_heat)
+
+  fig <- fig %>% add_trace(
+    data = heatmap_full,
+    x = ~field_x,
+    y = ~field_y,
+    frame = ~global_frame_id,
+    type = 'scatter',
+    mode = 'markers',
+    marker = list(
+      size = 8,
+      symbol = "circle",
+      color = player_color
+    ),
+    opacity = ~prob,
+    hoverinfo = "text",
+    text = ~paste0("Prob: ", round(prob, 2)),
+    showlegend = FALSE
+  )
+}
+
 
   # --- Ball ---
   ball_df <- prepare_ball(play_df)
@@ -445,8 +455,10 @@ animate_play_field_with_ball <- function(play_df) {
 
 
 chase <- get_play_df(tracking_df, plays, game_id = 2023100807, play_id = 2356, only_predict = TRUE)
-ball <- prepare_ball(chase)
 animate_play_field_with_ball(chase)
+
+watson <- get_play_df(tracking_df, plays, game_id = 2023112300, play_id = 55, only_predict = TRUE)
+animate_play_field_with_ball(watson)
 
 heatmap_df <- attr(chase, "heatmap_data")
 view(heatmap_df)
