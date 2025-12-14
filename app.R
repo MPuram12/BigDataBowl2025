@@ -15,7 +15,7 @@ h2o.init()
 if(dir.exists("h2o_models")) {
   tryCatch({
     model_no_id <- h2o.loadModel(file.path("h2o_models", "model_no_id"))
-    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id_dl"))
+    model_with_id <- h2o.loadModel(file.path("h2o_models", "model_with_id_dl2"))
   }, error = function(e) {
     warning("Could not load H2O models. Check your 'h2o_models' path.")
   })
@@ -27,9 +27,25 @@ if(dir.exists("h2o_models")) {
 if(file.exists("supplementary_data.csv") & file.exists("tracking_df.csv")) {
   plays <- read_csv("supplementary_data.csv", show_col_types = FALSE)
   tracking_df <- read_csv("tracking_df.csv", show_col_types = FALSE)
+  output_data <- read_csv("full_clean_data.csv", show_col_types = FALSE)
 } else {
   stop("Data files not found!")
 }
+
+output_data$pred1 <- round(h2o.predict(model_with_id, as.h2o(output_data))$p1 %>% as.vector(), 4)
+output_data$pred2 <- round(h2o.predict(model_with_id, as.h2o(output_data %>% select(-nfl_id)))$p1 %>% as.vector(), 4)
+output_data$effect <- output_data$pred1 - output_data$pred2
+view(output_data)
+
+tracking_df <- tracking_df %>%
+  select(-pred1, -pred2, -effect) %>%
+  left_join(
+    output_data %>%
+      select(game_id, play_id, time_left_s, nfl_id, pred1, pred2, effect),
+    by = c("game_id", "play_id", "time_left_s", "nfl_id")
+  )
+
+write.csv(tracking_df, "tracking_df2.csv", row.names = FALSE)
 
 # Define Colors
 team_colors_mapping <- c(
@@ -330,14 +346,63 @@ animate_play_field_with_ball <- function(play_df) {
     )
   )
 
-  fig <- plot_ly() %>%
-    layout(
-      title=list(text=paste0("Game ", play_df$game_id[1], " | Play ", play_df$play_id[1]), y=.965, x=0.5, xanchor="center", yanchor="bottom"),
-      xaxis=list(range=c(0, field_length), showticklabels=FALSE, zeroline=FALSE),
-      yaxis=list(range=c(0, field_width), showticklabels=FALSE, zeroline=FALSE),
-      plot_bgcolor="#00B140",
-      shapes=shapes_list
+ yard_numbers <- lapply(seq(20, 100, by = 10), function(x) {
+  num <- ifelse(x > 50, abs(110 - x), x - 10)
+
+  list(
+    x = x,
+    y = field_width / 5,
+    text = as.character(num),
+    showarrow = FALSE,
+    font = list(
+      family = "Arial Black",
+      size = 20,
+      color = "white"
+    ),
+    opacity = 1,
+    xref = "x",
+    yref = "y"
+  )
+})
+
+
+  yard_numbers <- c(
+  yard_numbers,
+  lapply(seq(20, 100, by = 10), function(x) {
+      num <- ifelse(x > 50, abs(110 - x), x - 10)
+
+    list(
+      x = x,
+      y = field_width*4/5,
+      text = as.character(num),
+      showarrow = FALSE,
+      font = list(
+        family = "Arial Black",
+        size = 20,
+        color = "white"
+      ),
+      opacity = 1,
+      textangle = 180,
+      xref = "x",
+      yref = "y"
     )
+  })
+)
+
+
+  fig <- plot_ly() %>%
+  layout(
+    title = list(
+      text = paste0("Game ", play_df$game_id[1], " | Play ", play_df$play_id[1]),
+      y = .9875, x = 0.5, xanchor = "center", yanchor = "bottom"
+    ),
+    xaxis = list(range = c(0, field_length), showticklabels = FALSE, zeroline = FALSE),
+    yaxis = list(range = c(0, field_width), showticklabels = FALSE, zeroline = FALSE),
+    plot_bgcolor = "#00B140",
+    shapes = shapes_list,
+    annotations = yard_numbers   # ← THIS is what you were missing
+  )
+
 
   # --- Vectors ---
   arrow_scale <- 10
@@ -363,15 +428,18 @@ animate_play_field_with_ball <- function(play_df) {
 
   # --- Players ---
   for(player in unique(play_df$nfl_id)) {
-    player_df <- play_df %>% filter(nfl_id==player)
+    player_df <- play_df %>% filter(nfl_id==player) %>%
+    mutate(text = paste0(player_name, "\n", round(speed,1), " yd/s", "\nPred: ", round(pred1*100, 2), "%\nAvg: ", round(pred2*100, 2), "%"))
     fig <- fig %>% add_trace(
       data=player_df, x=~x, y=~y, frame=~global_frame_id,
       type='scatter', mode='markers+text',
       marker=list(size=15, color=unique(player_df$player_color), line=list(color=unique(player_df$player_outline), width=2)),
-      text=~player_name, textposition='bottom center', textfont=list(color='black', size=17), textfont.weight='bold',
+      text=~text, textposition='bottom center', textfont = list(family = "Arial Black",size = 15, color = "black"),
       showlegend=FALSE, hoverinfo='none'
     )
   }
+
+  
 
   for(pid in unique(heatmap_df$nfl_id)) {
 
@@ -459,6 +527,10 @@ animate_play_field_with_ball(chase)
 
 watson <- get_play_df(tracking_df, plays, game_id = 2023112300, play_id = 55, only_predict = TRUE)
 animate_play_field_with_ball(watson)
+
+
+reed <- get_play_df(tracking_df, plays, game_id = 2023111205, play_id = 4137, only_predict = TRUE)
+animate_play_field_with_ball(reed)
 
 heatmap_df <- attr(chase, "heatmap_data")
 view(heatmap_df)
