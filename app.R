@@ -35,7 +35,7 @@ if(file.exists("supplementary_data.csv") & file.exists("tracking_df.csv")) {
 output_data$pred1 <- round(h2o.predict(model_with_id, as.h2o(output_data))$p1 %>% as.vector(), 4)
 output_data$pred2 <- round(h2o.predict(model_with_id, as.h2o(output_data %>% select(-nfl_id)))$p1 %>% as.vector(), 4)
 output_data$effect <- output_data$pred1 - output_data$pred2
-view(output_data)
+#view(output_data)
 
 tracking_df <- tracking_df %>%
   select(-pred1, -pred2, -effect) %>%
